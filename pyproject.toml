@@ -1,0 +1,35 @@
+[project]
+name = "ghoshell-container"
+version = "0.3.0-dev"
+description = "the ioc container useful for Interface oriented programming"
+authors = [
+    { name = "thirdgerb", email = "thirdgerb@gmail.com" }
+]
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "typing-extensions>=4.15.0",
+]
+
+[tool.setuptools]
+packages = [
+    { include = "src" },
+]
+
+[project.urls]
+Homepage = "https://github.com/GhostInShells/ghoshell-container"
+Repository = "https://github.com/GhostInShells/ghoshell-container"
+
+[tool.pdm.build]
+includes = []
+
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+]
