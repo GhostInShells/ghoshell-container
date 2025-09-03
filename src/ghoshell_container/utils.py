@@ -83,6 +83,8 @@ class ClassProvider(Provider):
     def __init__(self, contract: Type[INSTANCE], bound: Type[INSTANCE], singleton: bool, kwargs: dict | None):
         if not issubclass(bound, contract):
             raise TypeError(f"bound must be a subclass of {contract}")
+        if inspect.isabstract(bound):
+            raise TypeError(f"bound class must not be abstract, {bound} given")
         self._contract = contract
         self._bound = bound
         if not issubclass(self._bound, self._contract):

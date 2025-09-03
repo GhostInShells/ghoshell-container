@@ -1,6 +1,6 @@
 [project]
 name = "ghoshell-container"
-version = "0.3.0-dev"
+version = "0.3.0-dev1"
 description = "the ioc container useful for Interface oriented programming"
 authors = [
     { name = "thirdgerb", email = "thirdgerb@gmail.com" }

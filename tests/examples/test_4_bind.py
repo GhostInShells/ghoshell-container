@@ -97,8 +97,25 @@ def test_bind_with_invalid_subclass():
         c.bind(_Foo, _Bar)
 
 
+def test_not_allowed_to_bind_abstract():
+    from abc import ABC, abstractmethod
+
+    class Te(ABC):
+        @abstractmethod
+        def m(self):
+            pass
+
+    c = Container()
+    with pytest.raises(TypeError):
+        c.bind(Te)
+    with pytest.raises(RuntimeError):
+        c.make(Te)
+
+
 def test_bind_with_kwargs():
     c = Container()
     c.bind(_Cat, kwargs=dict(a=1))
     assert isinstance(c.get(_Cat), _Cat)
     assert c.get(_Cat).a is 1
+
+    assert len(list(c.contracts())) == 1

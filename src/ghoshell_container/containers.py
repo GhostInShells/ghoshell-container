@@ -5,15 +5,18 @@ from ghoshell_container.abcd import (
 from ghoshell_container.utils import get_caller_info, provide, is_builtin_type
 
 import inspect
-from typing import Type, Dict, Callable, Set, Optional, List, Any, Union, Iterable, get_type_hints
+from typing import Type, Dict, Callable, Set, Optional, List, Any, Union, Iterable, get_type_hints, Tuple
 from typing import ClassVar
 from typing_extensions import Self, is_protocol
+from contextvars import ContextVar, copy_context, Context
 import warnings
 
 __all__ = [
     'Container',
     'DeclaredContainer',
     'Inject',
+    'RecursiveMaker',
+    'RecursiveMakerCtxVar',
 ]
 
 
@@ -376,16 +379,34 @@ class Container(IoCContainer):
 
     def call(self, caller: Callable, *args, **kwargs) -> Any:
         named_kwargs = {name: value for name, value in kwargs.items()}
-        named_kwargs = self._reflect_callable_args(caller, args, named_kwargs)
-        return caller(*args, **named_kwargs)
+
+        try:
+            maker, ok = RecursiveMaker.find(self)
+            if ok:
+                named_kwargs = maker.reflect_callable_args(caller, args, named_kwargs)
+                return caller(*args, **named_kwargs)
+            else:
+                ctx = copy_context()
+                RecursiveMakerCtxVar.set(maker)
+                named_kwargs = ctx.run(maker.reflect_callable_args, caller, args, named_kwargs)
+                return ctx.run(caller, *args, **named_kwargs)
+        except Exception as e:
+            raise RuntimeError(f"container {self._bloodline} failed to call {caller}") from e
 
     def make(self, contract: Type[INSTANCE], **kwargs) -> INSTANCE:
         try:
             if contract in self._instances:
                 return self._instances[contract]
-            return self._make(contract, **kwargs)
+            maker, ok = RecursiveMaker.find(self)
+            if ok:
+                return maker.make(contract, **kwargs)
+            else:
+                ctx = copy_context()
+                RecursiveMakerCtxVar.set(maker)
+                # first time new a ctx
+                return ctx.run(maker.make, contract, **kwargs)
         except Exception as e:
-            raise RuntimeError(f"failed to make instance {contract} cause `{e}` "
+            raise RuntimeError(f"failed to make instance {contract} cause {type(e)}: `{e}` "
                                f"at container {self._bloodline}")
 
     def new(self, contract: Type[INSTANCE], **kwargs) -> INSTANCE:
@@ -393,10 +414,18 @@ class Container(IoCContainer):
             raise TypeError(f"Argument typehint: {type(contract)} should be class")
         elif is_builtin_type(contract):
             return contract(**kwargs)
+        elif inspect.isabstract(contract):
+            raise TypeError(f"failed to new abstract type: {contract}")
 
         init_fn = getattr(contract, '__init__', None)
         if init_fn is not None:
-            named_kwargs = self._reflect_callable_args(init_fn, (), kwargs)
+            maker, ok = RecursiveMaker.find(self)
+            if ok:
+                named_kwargs = maker.reflect_callable_args(init_fn, (), kwargs)
+            else:
+                ctx = copy_context()
+                RecursiveMakerCtxVar.set(maker)
+                named_kwargs = ctx.run(maker.reflect_callable_args, init_fn, (), kwargs)
             obj = contract(**named_kwargs)
         else:
             obj = contract(**kwargs)
@@ -417,7 +446,61 @@ class Container(IoCContainer):
                 setattr(obj, name, value)
         return obj
 
-    def _make(self, contract: Type[INSTANCE], **kwargs) -> INSTANCE | None:
+    def shutdown(self) -> None:
+        """
+        Manually delete the container to prevent memory leaks.
+        """
+        if self._is_shutting:
+            return
+        self._is_shutting = True
+        errors = []
+        if self._shutdown_funcs:
+            for shutdown in self._shutdown_funcs:
+                try:
+                    self.call(shutdown)
+                except Exception as e:
+                    errors.append(e)
+        self._is_shutdown = True
+        if errors:
+            info = " | ".join(str(e) for e in errors)
+            raise RuntimeError(f"container {self._bloodline} shutdown errors: {info}")
+
+    def __del__(self):
+        self.shutdown()
+        del self._shutdown_funcs
+        del self._instances
+        del self._parent
+        del self._providers
+        del self._bound
+        del self._bootstrapper_list
+        del self._aliases
+        Container.__instance_count__ -= 1
+        self.__class__.__instance_count__ -= 1
+
+
+class RecursiveMaker:
+    def __init__(
+            self,
+            container: IoCContainer,
+            max_depth: int = 10,
+            depth: int = 0,
+    ):
+        self._container = container
+        self._max_depth = max_depth
+        self._depth = depth
+        self._making_stack = set()
+
+    @classmethod
+    def find(cls, container: IoCContainer) -> Tuple[Self, bool]:
+        try:
+            maker = RecursiveMakerCtxVar.get()
+            if maker._container is container:
+                return maker, True
+            return cls(container), False
+        except LookupError:
+            return cls(container), False
+
+    def make(self, contract: Type[INSTANCE], **kwargs) -> INSTANCE | None:
         try:
             self._depth += 1
             if self._depth > self._max_depth:
@@ -428,17 +511,17 @@ class Container(IoCContainer):
 
             self._making_stack.add(contract)
 
-            instance = self.get(contract)
+            instance = self._container.get(contract)
             if instance is not None:
                 return instance
 
-            return self.new(contract, **kwargs)
+            return self._container.new(contract, **kwargs)
 
         finally:
             self._depth -= 1
             self._making_stack.remove(contract)
 
-    def _reflect_callable_args(
+    def reflect_callable_args(
             self,
             caller: Callable,
             args: tuple,
@@ -472,43 +555,15 @@ class Container(IoCContainer):
                 elif is_protocol(typehint):
                     continue
 
-                got = self._make(typehint)
+                got = self.make(typehint)
                 if got is not None:
                     injection = got
             if injection is not empty:
                 named_kwargs[name] = injection
         return named_kwargs
 
-    def shutdown(self) -> None:
-        """
-        Manually delete the container to prevent memory leaks.
-        """
-        if self._is_shutting:
-            return
-        self._is_shutting = True
-        errors = []
-        if self._shutdown_funcs:
-            for shutdown in self._shutdown_funcs:
-                try:
-                    self.call(shutdown)
-                except Exception as e:
-                    errors.append(e)
-        self._is_shutdown = True
-        if errors:
-            info = " | ".join(str(e) for e in errors)
-            raise RuntimeError(f"container {self._bloodline} shutdown errors: {info}")
 
-    def __del__(self):
-        self.shutdown()
-        del self._shutdown_funcs
-        del self._instances
-        del self._parent
-        del self._providers
-        del self._bound
-        del self._bootstrapper_list
-        del self._aliases
-        Container.__instance_count__ -= 1
-        self.__class__.__instance_count__ -= 1
+RecursiveMakerCtxVar = ContextVar[RecursiveMaker]('GhoshellContextRecursiveMaker')
 
 
 class Inject:

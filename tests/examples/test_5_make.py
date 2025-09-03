@@ -59,7 +59,25 @@ def test_make_with_di():
 
 
 def test_recursive_make():
+    import threading
     c = Container()
     c.bind(_Foo, _Bar)
+    c.bind(_Zoo, kwargs=dict(a=1))
 
-    c.bind(_Zoo, )
+    def assert_zoo():
+        zoo = c.make(_Zoo)
+        assert isinstance(zoo, _Zoo)
+        assert zoo.a == 1
+        assert isinstance(zoo.foo, _Bar)
+
+    # single time
+    assert_zoo()
+
+    ths = []
+    # concurrent making
+    for i in range(10):
+        t = threading.Thread(target=assert_zoo)
+        t.start()
+        ths.append(t)
+    for t in ths:
+        t.join()

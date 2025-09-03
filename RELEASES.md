@@ -1,5 +1,11 @@
 # 0.3.0
 
+## 0.3.0-dev1
+
+* add some test case
+* add RecursivelyMaker in case of concurrent making
+* not allow make abstract class
+
 ## 0.3.0-dev
 
 refact from `ghostos_container`
